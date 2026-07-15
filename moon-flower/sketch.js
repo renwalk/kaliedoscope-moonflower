@@ -1,15 +1,22 @@
 let data;
 
-// Styling for the caption drawn on the canvas itself (name/date/phase text).
-// This lives here rather than in style.css because it's rendered as pixels
-// inside the <canvas>, not as HTML text, so CSS can't reach it.
-const CAPTION_COLOR = 200;
-const CAPTION_SIZE = 12;
+// Simplified lunar orbit constants (mean elements) used to approximate the
+// Moon's current distance and angular diameter. This is a first-order Kepler
+// approximation (mean anomaly used in place of true anomaly) -- accurate to
+// roughly 1-2%, good enough for a dashboard readout, not for navigation.
+const MOON_SEMI_MAJOR_AXIS_KM = 384400;
+const MOON_ECCENTRICITY = 0.0549;
+const MOON_ANOMALISTIC_MONTH_DAYS = 27.55455;
+const MOON_PERIGEE_EPOCH = new Date('2000-01-06T05:00:00Z');
+const MOON_DIAMETER_KM = 3474.8;
+const KM_TO_MILES = 0.621371;
 
-let useCurrentCheckbox;
+let useCurrentCheckbox, playButton, statusDot;
+let titleSubtitle, telPhase, telIllum, telDistance, telAngular;
+let moonThumb, thumbGfx;
+
 let moonPhaseSlider, moonPhaseGroup;
-let reflectionsSlider, ringsSlider, sizeSlider, angleSlider, distanceSlider, opacitySlider;
-let playButton, speedSlider;
+let reflectionsSlider, ringsSlider, sizeSlider, angleSlider, distanceSlider, opacitySlider, speedSlider;
 let isPlaying = false;
 
 function preload() {
@@ -22,62 +29,86 @@ function preload() {
 }
 
 function setup() {
-  createControls();
+  wireStaticControls();
+  buildSliders();
 
-  let canvasContainer = createDiv();
-  canvasContainer.id('canvas-container');
+  let canvasContainer = select('#canvas-container');
   let cnv = createCanvas(700, 700);
   cnv.parent(canvasContainer);
+
+  moonThumb = select('#moon-thumb');
+  thumbGfx = createGraphics(moonThumb.width, moonThumb.height);
+  thumbGfx.parent(moonThumb);
 
   angleMode(DEGREES);
   noStroke();
 }
 
-function createControls() {
-  let panel = createDiv();
-  panel.id('controls');
+function wireStaticControls() {
+  statusDot = select('#status-dot');
+  titleSubtitle = select('#title-subtitle');
+  telPhase = select('#tel-phase');
+  telIllum = select('#tel-illum');
+  telDistance = select('#tel-distance');
+  telAngular = select('#tel-angular');
 
-  let title = createElement('h1', 'Moonflower');
-  title.parent(panel);
-  title.class('sidebar-title');
-
-  let intro = createP('A kaleidoscope built from the current — or any — moon phase. Adjust the shape with the controls below.');
-  intro.parent(panel);
-  intro.class('sidebar-intro');
-
-  useCurrentCheckbox = createCheckbox('Use current moon phase', true);
-  useCurrentCheckbox.parent(panel);
-  useCurrentCheckbox.class('use-current-checkbox');
+  useCurrentCheckbox = checkboxRow(select('#checkbox-slot'), 'Use current moon phase', true);
   useCurrentCheckbox.changed(() => {
-    moonPhaseSlider.elt.disabled = useCurrentCheckbox.checked();
+    moonPhaseSlider.elt.disabled = useCurrentCheckbox.elt.checked;
   });
 
-  moonPhaseGroup = sliderGroup(panel, 'Moon phase', 0, 1, 0.22, 0.001);
+  playButton = select('#play-button');
+  playButton.mousePressed(togglePlay);
+}
+
+function buildSliders() {
+  let container = select('#sliders');
+
+  moonPhaseGroup = sliderRow(container, 'Moon phase', 0, 1, 0.22, 0.001);
   moonPhaseSlider = moonPhaseGroup.slider;
   moonPhaseSlider.elt.disabled = true; // matches checkbox default (checked)
 
-  playButton = createButton('Play');
-  playButton.parent(panel);
-  playButton.id('play-button');
-  playButton.mousePressed(togglePlay);
+  reflectionsSlider = sliderRow(container, 'Reflections', 2, 24, 8, 1).slider;
+  angleSlider = sliderRow(container, 'Angle', 0, 360, 0, 1).slider;
+  ringsSlider = sliderRow(container, 'Rings', 1, 8, 3, 1).slider;
+  sizeSlider = sliderRow(container, 'Size', 10, 120, 50, 1).slider;
+  opacitySlider = sliderRow(container, 'Opacity', 0, 255, 255, 1).slider;
+  speedSlider = sliderRow(container, 'Speed', 0.0005, 0.02, 0.0025, 0.0005).slider;
+  distanceSlider = sliderRow(container, 'Distance', 10, 100, 60, 1).slider;
+}
 
-  speedSlider = sliderGroup(panel, 'Speed', 0.0005, 0.02, 0.0025, 0.0005).slider;
+// Custom checkbox (Figma dashboard style): a plain <label> wrapping a fully
+// transparent native checkbox for real interaction, plus decorative
+// box/text spans that react to it purely via CSS sibling selectors.
+function checkboxRow(parent, label, checked) {
+  let row = createElement('label');
+  row.parent(parent);
+  row.class('checkbox-row');
 
-  reflectionsSlider = sliderGroup(panel, 'Reflections', 2, 24, 8, 1).slider;
-  ringsSlider = sliderGroup(panel, 'Rings', 1, 8, 3, 1).slider;
-  sizeSlider = sliderGroup(panel, 'Size', 10, 120, 50, 1).slider;
-  angleSlider = sliderGroup(panel, 'Angle', 0, 360, 0, 1).slider;
-  distanceSlider = sliderGroup(panel, 'Distance', 10, 100, 60, 1).slider;
-  opacitySlider = sliderGroup(panel, 'Opacity', 0, 255, 255, 1).slider;
+  let input = createElement('input');
+  input.parent(row);
+  input.attribute('type', 'checkbox');
+  input.elt.checked = checked;
+
+  let box = createDiv();
+  box.parent(row);
+  box.class('checkbox-box');
+
+  let text = createSpan(label);
+  text.parent(row);
+  text.class('checkbox-text');
+
+  return input;
 }
 
 function togglePlay() {
   isPlaying = !isPlaying;
-  playButton.html(isPlaying ? 'Pause' : 'Play');
+  playButton.html('<span class="play-icon">' + (isPlaying ? '❚❚' : '▶') + '</span> ' + (isPlaying ? 'Pause' : 'Play'));
+  statusDot.class(isPlaying ? 'status-dot active' : 'status-dot');
 
   if (isPlaying) {
     // Animating the phase only makes sense against the manual slider.
-    useCurrentCheckbox.checked(false);
+    useCurrentCheckbox.elt.checked = false;
     useCurrentCheckbox.elt.disabled = true;
     moonPhaseSlider.elt.disabled = false;
   } else {
@@ -85,24 +116,53 @@ function togglePlay() {
   }
 }
 
-function sliderGroup(parent, label, min, max, val, step) {
-  let group = createDiv();
-  group.parent(parent);
-  group.class('control-group');
+// Builds the thin-line "sci-fi" slider look (Figma dashboard style): a
+// background line, a filled portion, and a tick mark, all driven from a
+// fully transparent native range input layered on top to keep real
+// drag/keyboard accessibility.
+function sliderRow(parent, label, min, max, val, step) {
+  let row = createDiv();
+  row.parent(parent);
+  row.class('control-row');
 
   let labelSpan = createSpan(label);
-  labelSpan.parent(group);
+  labelSpan.parent(row);
   labelSpan.class('control-label');
 
+  let track = createDiv();
+  track.parent(row);
+  track.class('slider-track');
+
+  let trackBg = createDiv();
+  trackBg.parent(track);
+  trackBg.class('slider-track-bg');
+
+  let fill = createDiv();
+  fill.parent(trackBg);
+  fill.class('slider-track-fill');
+
+  let tick = createDiv();
+  tick.parent(trackBg);
+  tick.class('slider-thumb-tick');
+
   let slider = createSlider(min, max, val, step);
-  slider.parent(group);
+  slider.parent(track);
 
   let valueSpan = createSpan(String(val));
-  valueSpan.parent(group);
+  valueSpan.parent(row);
   valueSpan.class('control-value');
-  slider.input(() => valueSpan.html(slider.value()));
 
-  return { group, slider, valueSpan };
+  function refresh() {
+    let pct = ((slider.value() - min) / (max - min)) * 100;
+    fill.style('width', pct + '%');
+    tick.style('left', pct + '%');
+    valueSpan.html(slider.value());
+  }
+
+  slider.input(refresh);
+  refresh();
+
+  return { row, slider, valueSpan, refresh };
 }
 
 function draw() {
@@ -112,10 +172,10 @@ function draw() {
     let next = moonPhaseSlider.value() + speedSlider.value();
     if (next >= 1) next -= 1;
     moonPhaseSlider.value(next);
-    moonPhaseGroup.valueSpan.html(next.toFixed(3));
+    moonPhaseGroup.refresh(); // updates the track fill/tick position too, not just the number
   }
 
-  let usingCurrent = useCurrentCheckbox.checked() && data;
+  let usingCurrent = useCurrentCheckbox.elt.checked && data;
   let moonPhase = usingCurrent ? data.days[0].moonphase : moonPhaseSlider.value();
 
   let reflections = reflectionsSlider.value();
@@ -142,23 +202,62 @@ function draw() {
       // Mirror every other segment for true kaleidoscope symmetry.
       if (i % 2 === 1) scale(-1, 1);
       rotate(angle); // spins the motif in place, independent of its position
-      drawMoon(0, 0, size, moonPhase, opacity);
+      drawMoonOn(window, 0, 0, size, moonPhase, opacity);
       pop();
     }
   }
   pop();
 
-  fill(CAPTION_COLOR);
-  textAlign(CENTER);
-  textSize(CAPTION_SIZE);
-  if (usingCurrent) {
-    text(
-      phaseLabel(moonPhase) + '  ·  ' + data.days[0].datetime + '  ·  phase ' + moonPhase.toFixed(3),
-      width / 2, height - 20
-    );
-  } else {
-    text(phaseLabel(moonPhase) + '  ·  phase ' + moonPhase.toFixed(3), width / 2, height - 20);
-  }
+  drawThumbnail(moonPhase);
+  updateTelemetry(usingCurrent, moonPhase);
+}
+
+function drawThumbnail(moonPhase) {
+  thumbGfx.background(0);
+  thumbGfx.noStroke();
+  let d = min(thumbGfx.width, thumbGfx.height) * 0.8;
+  let cx = thumbGfx.width / 2;
+  let cy = thumbGfx.height / 2;
+
+  // Unlike the main flower (which needs the night side fully transparent so
+  // overlapping petals blend), the thumbnail is a single icon: it needs a
+  // visible disc behind the crescent (fill + outline) so thin phases still
+  // read clearly instead of nearly disappearing against a plain black square.
+  thumbGfx.stroke(255, 220);
+  thumbGfx.strokeWeight(2);
+  thumbGfx.fill(110);
+  thumbGfx.ellipse(cx, cy, d, d);
+  thumbGfx.noStroke();
+
+  drawMoonOn(thumbGfx, cx, cy, d, moonPhase, 255);
+}
+
+function updateTelemetry(usingCurrent, moonPhase) {
+  let name = phaseLabel(moonPhase);
+  let illumPct = round(((1 - cos(moonPhase * 360)) / 2) * 100);
+
+  let distanceKm = moonDistanceKm(new Date());
+  let distanceMiles = distanceKm * KM_TO_MILES;
+  let angularArcsec = angularDiameterArcsec(distanceKm);
+
+  titleSubtitle.html('Kaleidoscope · ' + name);
+  telPhase.html(name);
+  telIllum.html(illumPct + '%');
+  telDistance.html(Math.round(distanceMiles).toLocaleString() + ' mi');
+  telAngular.html(angularArcsec.toFixed(1) + ' arcsec');
+}
+
+// First-order Kepler approximation of the Moon's distance from Earth (km),
+// using mean anomaly since a known perigee in place of true anomaly.
+function moonDistanceKm(date) {
+  let daysSincePerigee = (date - MOON_PERIGEE_EPOCH) / 86400000;
+  let meanAnomalyDeg = (360 * (daysSincePerigee / MOON_ANOMALISTIC_MONTH_DAYS)) % 360;
+  return MOON_SEMI_MAJOR_AXIS_KM * (1 - MOON_ECCENTRICITY * cos(meanAnomalyDeg));
+}
+
+function angularDiameterArcsec(distanceKm) {
+  let angleRad = 2 * Math.atan((MOON_DIAMETER_KM / 2) / distanceKm);
+  return angleRad * (180 / Math.PI) * 3600;
 }
 
 function phaseLabel(p) {
@@ -175,21 +274,26 @@ function phaseLabel(p) {
 // Draws only the illuminated sliver as a single closed shape (no dark disc
 // underneath), so overlapping petals in the kaleidoscope blend instead of
 // one moon's night side opaquely covering the moons behind it.
-function drawMoon(cx, cy, moonSize, moonPhase, opacity) {
+// `g` is either `window` (the global p5 instance, for the main canvas) or a
+// p5.Graphics buffer (for the sidebar thumbnail) -- both expose the same
+// fill/beginShape/vertex/endShape API.
+function drawMoonOn(g, cx, cy, moonSize, moonPhase, opacity) {
   let r = moonSize / 2;
   let fixedSign = moonPhase <= 0.5 ? 1 : -1; // which side stays lit (right/left)
   // Signed horizontal reach of the terminator: same side as fixedSign and
   // near +r for a thin crescent hugging the edge; opposite side and near
   // -r for a nearly-full moon bulging into the other half.
-  let termX = fixedSign * r * cos(moonPhase * 360);
+  let termX = fixedSign * r * Math.cos(moonPhase * 2 * Math.PI);
 
-  fill(255, opacity);
-  beginShape();
-  for (let theta = 0; theta <= 180; theta += 6) {
-    vertex(cx + fixedSign * r * sin(theta), cy - r * cos(theta));
+  g.fill(255, opacity);
+  g.beginShape();
+  for (let thetaDeg = 0; thetaDeg <= 180; thetaDeg += 6) {
+    let t = thetaDeg * Math.PI / 180;
+    g.vertex(cx + fixedSign * r * Math.sin(t), cy - r * Math.cos(t));
   }
-  for (let theta = 180; theta >= 0; theta -= 6) {
-    vertex(cx + termX * sin(theta), cy - r * cos(theta));
+  for (let thetaDeg = 180; thetaDeg >= 0; thetaDeg -= 6) {
+    let t = thetaDeg * Math.PI / 180;
+    g.vertex(cx + termX * Math.sin(t), cy - r * Math.cos(t));
   }
-  endShape(CLOSE);
+  g.endShape('close');
 }
