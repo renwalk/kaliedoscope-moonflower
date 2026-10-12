@@ -1,5 +1,3 @@
-let data;
-
 // Low-precision lunar orbit elements (Paul Schlyter's mean-element model) used
 // to approximate the Moon's current geocentric distance and equatorial
 // position (RA/Dec). No perturbation terms -- accurate to roughly 1-2%, good
@@ -22,15 +20,6 @@ let isPlaying = false;
 // asynchronously by the Geolocation API; angle mapping is skipped until it
 // resolves (or stays skipped forever if the user denies/lacks support).
 let observerLat = null, observerLon = null, geoStatus = 'locating';
-
-function preload() {
-  let today = new Date();
-  let month = ('0' + (today.getMonth() + 1)).slice(-2);
-  let day = ('0' + today.getDate()).slice(-2);
-  let dateStr = today.getFullYear() + '-' + month + '-' + day;
-  const url = 'https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/Philadelphia,PA/' + dateStr + '?unitGroup=us&key=9MXXYW449LTYGB7EEG4Q8HBK2&include=days&elements=datetime,moonphase&contentType=json';
-  data = loadJSON(url);
-}
 
 function setup() {
   wireStaticControls();
@@ -213,9 +202,9 @@ function draw() {
     moonPhaseGroup.refresh(); // updates the track fill/tick position too, not just the number
   }
 
-  let usingCurrent = useCurrentCheckbox.elt.checked && data;
-  let moonPhase = usingCurrent ? data.days[0].moonphase : moonPhaseSlider.value();
+  let usingCurrent = useCurrentCheckbox.elt.checked;
   let pos = moonOrbitPosition(new Date());
+  let moonPhase = usingCurrent ? pos.phase : moonPhaseSlider.value();
 
   if (usingCurrent) {
     applyRealAngleAndDistance(pos);
@@ -342,7 +331,18 @@ function moonOrbitPosition(date) {
   let yeclip = r * (sin(N) * cos(v + w) + cos(N) * sin(v + w) * cos(inc));
   let zeclip = r * sin(v + w) * sin(inc);
 
-  let lonEcl = normalizeDeg(atan2(yeclip, xeclip));
+  // Sun's ecliptic longitude (same low-precision model), needed for phase and
+  // for the largest lunar longitude perturbations.
+  let Ms = normalizeDeg(356.047 + 0.9856002585 * d);
+  let ws = 282.9404 + 4.70935e-5 * d;
+  let sunLon = normalizeDeg(Ms + ws + 1.915 * sin(Ms) + 0.02 * sin(2 * Ms));
+
+  // Elongation D (Moon minus Sun mean longitude) drives the biggest
+  // perturbations: evection, variation and the annual equation (~1.3 deg).
+  let D = normalizeDeg(M + w + N - (Ms + ws));
+  let lonEcl = normalizeDeg(
+    atan2(yeclip, xeclip) - 1.274 * sin(M - 2 * D) + 0.658 * sin(2 * D) - 0.186 * sin(Ms)
+  );
   let latEcl = atan2(zeclip, Math.sqrt(xeclip * xeclip + yeclip * yeclip));
   let obliquity = 23.4393 - 3.563e-7 * d;
 
@@ -352,6 +352,7 @@ function moonOrbitPosition(date) {
 
   return {
     distanceKm: r * EARTH_RADIUS_KM,
+    phase: normalizeDeg(lonEcl - sunLon) / 360, // 0 = new, 0.5 = full
     raDeg: normalizeDeg(atan2(yeq, xeq)),
     decDeg: atan2(zeq, Math.sqrt(xeq * xeq + yeq * yeq))
   };
